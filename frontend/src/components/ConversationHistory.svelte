@@ -3,6 +3,7 @@
   import ConversationMessage from '$components/ConversationMessage.svelte';
   import Button from '$components/ui/Button.svelte';
   import { displayName } from '$lib/agents';
+  import { conversationEntries } from '$lib/conversation';
   import { relayStore } from '$lib/store';
   import type { Agent, ConversationEntry } from '$lib/types';
 
@@ -125,22 +126,6 @@
     }
   }
 
-  function conversationEntries(recorded: ConversationEntry[]): ConversationEntry[] {
-    const conversation: ConversationEntry[] = [];
-    let latestAssistant: ConversationEntry | null = null;
-    for (const entry of recorded) {
-      if (entry.role === 'user') {
-        if (latestAssistant) conversation.push(latestAssistant);
-        latestAssistant = null;
-        conversation.push(entry);
-        continue;
-      }
-      if (entry.text.trim()) latestAssistant = entry;
-    }
-    if (latestAssistant) conversation.push(latestAssistant);
-    return conversation;
-  }
-
   function mergeEntries(first: ConversationEntry[], second: ConversationEntry[]): ConversationEntry[] {
     const merged: ConversationEntry[] = [];
     const indexById = new Map<string, number>();
@@ -259,7 +244,7 @@
                 {/if}
               </span>
             </header>
-            <ConversationMessage text={entry.text} tools={mode === 'activity' ? entry.tools : []} highlight={query.trim()} />
+            <ConversationMessage text={entry.text} tools={entry.tools} highlight={query.trim()} />
             {#if entry.truncated}<small>Long turn truncated by the relay.</small>{/if}
           </article>
         {/each}
