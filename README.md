@@ -102,9 +102,11 @@ inherits the shell environment a Herdr pane runs in. If a pane sets
 profile — one per herdr setup — the pane keeps whatever title herdr itself
 reports, but the relay-resolved session name and the transcript both come up
 empty, and the conversation view shows "No conversation log is available for
-this session." The same lists below also decide where that profile's slash
-commands and skills are discovered, so a profile whose commands are missing
-from the palette has the same root cause.
+this session." For Pi and Oh My Pi the same lists below also decide where that
+profile's slash commands and skills are discovered, so a profile whose commands
+are missing from the palette has the same root cause. Claude Code and Qoder
+resolve their personal commands and skills from `~/.claude` and `~/.qoder`
+directly, so those lists do not move command discovery for them.
 
 Pi and Oh My Pi need no configuration for their named profiles as long as the
 config root stays at its default, `~/.pi` or `~/.omp`: both keep a profile's

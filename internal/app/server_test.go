@@ -547,7 +547,9 @@ func TestHistorySeedSuppressesMergeWhileWalking(t *testing.T) {
 	before := s.historyM.Depth("pane-1")
 
 	s.historyCaptureMu.Lock()
-	s.historySeeds["pane-1"] = &historySeedState{generation: s.state.Generation("pane-1")}
+	s.historySeeds["pane-1"] = &historySeedState{
+		generation: s.state.Generation("pane-1"), walking: true,
+	}
 	s.historyInflight["pane-1"] = true
 	s.historyCaptureMu.Unlock()
 
@@ -561,6 +563,71 @@ func TestHistorySeedSuppressesMergeWhileWalking(t *testing.T) {
 	}
 	if depth := s.historyM.Depth("pane-1"); depth != before {
 		t.Fatalf("history depth %d -> %d during the walk", before, depth)
+	}
+}
+
+// A pane keeps its seed record after a declined walk, and the ordinary capture
+// loop marks the same pane in flight every few seconds. Reading the shared
+// in-flight map as "a walk is running" therefore dropped watch frames from
+// history for seconds at a time, on a pane nothing was scrolling - and for an
+// alternate-screen agent the relay is the only thing accumulating that
+// scrollback, so those rows were lost for good.
+func TestHistoryMergesFrameWhileOrdinaryCaptureRuns(t *testing.T) {
+	s, _ := testSeedServer(t, func(context.Context, string, int) (string, bool, error) {
+		return "", false, nil
+	})
+	s.historyM.Merge("pane-1", "watched 1\nwatched 2"+seedFooter)
+	before := s.historyM.Depth("pane-1")
+
+	s.historyCaptureMu.Lock()
+	// A seed left over from a declined walk: still pending, but not walking.
+	s.historySeeds["pane-1"] = &historySeedState{generation: s.state.Generation("pane-1")}
+	// The background capture loop holds the pane for the length of its read.
+	s.historyInflight["pane-1"] = true
+	s.historyCaptureMu.Unlock()
+
+	response := map[string]any{
+		"type": "pane_content", "pane_id": "pane-1",
+		"content": "current 1\ncurrent 2" + seedFooter, "format": "ansi", "truncated": false,
+	}
+	s.preparePaneResponse(map[string]any{"pane_id": "pane-1", "lines": 100}, response)
+
+	content, _ := response["content"].(string)
+	for _, want := range []string{"watched 1", "current 2"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("frame content %q lost %q", content, want)
+		}
+	}
+	if depth := s.historyM.Depth("pane-1"); depth != before+2 {
+		t.Fatalf("history depth %d -> %d, want the frame's rows appended", before, depth)
+	}
+}
+
+// A pane whose entire transcript fits on one screen answers a real walk with as
+// few rows as a decline does, and nothing in the response separates the two. Such
+// a pane can never reach the target depth either, so retrying it forever scrolled
+// the operator's pane every 15s for as long as the pane lived.
+func TestHistorySeedStopsWalkingAPaneThatOnlyEverAnswersShort(t *testing.T) {
+	s, calls := testSeedServer(t, func(context.Context, string, int) (string, bool, error) {
+		return "screen 1" + seedFooter, false, nil
+	})
+	s.historyM.Merge("pane-1", "screen 1"+seedFooter)
+
+	for range historySeedMaxAttempts + 4 {
+		runSeed(s)
+	}
+
+	if *calls != historySeedMaxAttempts {
+		t.Fatalf("short pane walked %d times, want at most %d", *calls, historySeedMaxAttempts)
+	}
+	s.historyCaptureMu.Lock()
+	seed := s.historySeeds["pane-1"]
+	s.historyCaptureMu.Unlock()
+	if seed == nil {
+		t.Fatal("seed record for a live pane disappeared")
+	}
+	if !seed.done {
+		t.Fatalf("seed still pending after %d short walks, want retired", seed.attempts)
 	}
 }
 
