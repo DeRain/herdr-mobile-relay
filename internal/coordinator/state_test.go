@@ -70,6 +70,11 @@ func TestCommitInventoryAndSnapshot(t *testing.T) {
 	if len(snap) != 2 {
 		t.Fatalf("snapshot len = %d, want 2", len(snap))
 	}
+	// The backing store is a map; the snapshot must impose a stable order so
+	// consecutive identical inventories serialize identically.
+	if snap[0].PaneID != "p1" || snap[1].PaneID != "p2" {
+		t.Errorf("snapshot order = %s, %s, want p1, p2", snap[0].PaneID, snap[1].PaneID)
+	}
 	if s.AgentCount() != 2 {
 		t.Errorf("agent count = %d, want 2", s.AgentCount())
 	}
@@ -466,9 +471,9 @@ func TestInflightPollPreservesNewerBlockedClassification(t *testing.T) {
 		t.Fatal("classification setup failed")
 	}
 
-	if !s.CommitPoll([]*AgentState{{
+	if _, committed := s.CommitPoll([]*AgentState{{
 		PaneID: "p1", Agent: "codex", Status: "working",
-	}}, token) {
+	}}, nil, token); !committed {
 		t.Fatal("stable in-flight poll was rejected")
 	}
 	current, _ := s.Agent("p1")
@@ -502,13 +507,37 @@ func TestTopologyCommitPreservesCurrentStatusAndAttention(t *testing.T) {
 		Agent:  "codex",
 		Name:   "renamed",
 		Status: "idle",
-	}}, s.RevisionCounter())
+	}}, nil, s.RevisionCounter())
 	current, _ := s.Agent("p1")
 	if current.Status != "blocked" ||
 		current.AttentionKind != question.AttentionApproval ||
 		len(current.Options) != 2 ||
 		current.Name != "renamed" {
 		t.Fatalf("topology commit overwrote current state: %+v", current)
+	}
+}
+
+func TestInflightPollCannotOverwriteNewerWorkspaceEvent(t *testing.T) {
+	s := NewState(testLogger())
+	s.CommitInventory([]*AgentState{{PaneID: "p1", Agent: "codex", Status: "working"}}, 0)
+	s.CommitWorkspaces([]herdr.Workspace{{ID: "w1", Label: "Before"}})
+	token := s.BeginPoll()
+
+	s.CommitTopology(
+		[]*AgentState{{PaneID: "p1", Agent: "codex", Status: "working"}},
+		[]herdr.Workspace{{ID: "w1", Label: "Desktop rename"}},
+		s.RevisionCounter(),
+	)
+	if _, committed := s.CommitPoll(
+		[]*AgentState{{PaneID: "p1", Agent: "codex", Status: "working"}},
+		[]herdr.Workspace{{ID: "w1", Label: "Before"}},
+		token,
+	); committed {
+		t.Fatal("poll sampled before the workspace event was committed")
+	}
+	workspace, ok := s.Workspace("w1")
+	if !ok || workspace.Label != "Desktop rename" {
+		t.Fatalf("workspace = %+v, ok=%v", workspace, ok)
 	}
 }
 

@@ -18,10 +18,23 @@ import { constants, gzipSync } from 'node:zlib';
 // observer that owns the pin, its scroll tracker and the stream box it watches
 // measure +126 B gzip in `assets/app.js` and +2 B in `assets/app.css`, and the
 // released 0.17.4 payload left only 107 B under the old ceiling.
+// Raised from 117 KiB for the Conversation History prompt composer (issue #13):
+// prompt dispatch safety, interaction locks and image attachment add 1,525 B
+// gzip to the released 0.17.5 baseline, which had 1,208 B of headroom.
+// Raised from 118 KiB for authoritative workspace topology and the complete
+// workspace/worktree manager (issue #14): empty workspace cards, safe
+// destructive confirmations, directory selection, and worktree create/open
+// flows add one project-level control surface to the single application bundle.
+// Raised from 123 KiB for the native-style workspace follow-up: shared
+// long-press drag ordering, modal create/worktree flows, and nested linked
+// worktrees add 2,750 B gzip to the 0.17.6 bundle.
+// Raised from 126 KiB for the worktree tree presentation (issue #14 review):
+// connector rails, informative-only provenance/path rows, and the flat-Git
+// worktree gating add 482 B gzip to the 0.17.8 bundle, 19 B past the ceiling.
 // The gzip figure is the measuring runtime's zlib, not a property of the
 // bundle: the same bytes measure ~300 B larger under Bun than under Node, so
 // compare numbers only across runs on the same runtime (the repo uses Bun).
-const limitKiB = 117;
+const limitKiB = 127;
 const limit = limitKiB * 1024;
 const root = resolve(process.argv[2] || 'dist');
 const files = ['index.html', 'assets/app.js', 'assets/app.css'];

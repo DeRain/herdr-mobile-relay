@@ -52,6 +52,7 @@ type Dispatcher struct {
 	broadcast        func(any)
 	wakePoll         func()
 	readMu           sync.Mutex
+	topologyMu       sync.Mutex
 	reads            map[string]*paneRead
 	watcherMu        sync.Mutex
 	watcherCtx       context.Context
@@ -303,6 +304,28 @@ func (d *Dispatcher) HandleAdmitted(
 	}
 	ctx = context.WithValue(ctx, admissionContextKey{}, signal)
 	result := d.Handle(ctx, message)
+	signal()
+	return result
+}
+
+// HandleTopologyAdmitted mirrors HandleAdmitted for the workspace and
+// worktree handlers, which are called directly rather than through Handle.
+// The handler signals admission via admitTopology before it waits on
+// topologyMu — the hub's global ordered ingress must not stay blocked for
+// either the mutex wait or the Herdr command itself. The trailing signal
+// covers handlers that return before reaching admission (validation
+// failures, read-only paths).
+func (d *Dispatcher) HandleTopologyAdmitted(
+	ctx context.Context,
+	admitted func(),
+	handle func(context.Context) *CommandResult,
+) *CommandResult {
+	var once sync.Once
+	signal := func() {
+		once.Do(admitted)
+	}
+	ctx = context.WithValue(ctx, admissionContextKey{}, signal)
+	result := handle(ctx)
 	signal()
 	return result
 }
@@ -575,10 +598,11 @@ func (d *Dispatcher) handleAcknowledge(requestID, paneID string) *CommandResult 
 
 func (d *Dispatcher) handleAgentStart(ctx context.Context, receivedAt time.Time, requestID string, message map[string]any) *CommandResult {
 	request := StartRequest{
-		ProfileID: stringValue(message, "profile_id"),
-		Name:      stringValue(message, "name"),
-		Cwd:       stringValue(message, "cwd"),
-		Prompt:    stringValue(message, "prompt"),
+		ProfileID:   stringValue(message, "profile_id"),
+		WorkspaceID: stringValue(message, "workspace_id"),
+		Name:        stringValue(message, "name"),
+		Cwd:         stringValue(message, "cwd"),
+		Prompt:      stringValue(message, "prompt"),
 	}
 	if request.ProfileID == "" || request.Name == "" || request.Cwd == "" {
 		return d.fail(requestID, "agent_start", "", "Profile, name, and working directory are required")

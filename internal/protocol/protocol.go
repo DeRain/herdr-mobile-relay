@@ -34,6 +34,13 @@ var mutatingTypes = map[string]bool{
 	"agent_stop":          true,
 	"agent_clear":         true,
 	"agent_restart":       true,
+	"workspace_create":    true,
+	"workspace_rename":    true,
+	"workspace_reorder":   true,
+	"workspace_close":     true,
+	"worktree_create":     true,
+	"worktree_open":       true,
+	"worktree_remove":     true,
 	"acknowledge_pane":    true,
 	"upload_image":        true,
 	"register_app_origin": true,
@@ -44,44 +51,51 @@ var mutatingTypes = map[string]bool{
 }
 
 type Inbound struct {
-	Type             string          `json:"type"`
-	Protocol         int             `json:"protocol"`
-	RequestID        string          `json:"request_id,omitempty"`
-	PaneID           string          `json:"pane_id,omitempty"`
-	Text             string          `json:"text,omitempty"`
-	Name             string          `json:"name,omitempty"`
-	ProfileID        string          `json:"profile_id,omitempty"`
-	Cwd              string          `json:"cwd,omitempty"`
-	Prompt           string          `json:"prompt,omitempty"`
-	EventID          string          `json:"event_id,omitempty"`
-	InteractionID    string          `json:"interaction_id,omitempty"`
-	InsertIndex      *int            `json:"insert_index,omitempty"`
-	Index            *int            `json:"index,omitempty"`
-	Total            *int            `json:"total,omitempty"`
-	Keys             []string        `json:"keys,omitempty"`
-	SelectedIndices  []int           `json:"selected_indices,omitempty"`
-	OtherSelected    bool            `json:"other_selected,omitempty"`
-	OtherText        string          `json:"other_text,omitempty"`
-	Direction        string          `json:"direction,omitempty"`
-	Lines            int             `json:"lines,omitempty"`
-	Before           string          `json:"before,omitempty"`
-	Limit            int             `json:"limit,omitempty"`
-	Columns          int             `json:"columns,omitempty"`
-	Rows             int             `json:"rows,omitempty"`
-	Format           string          `json:"format,omitempty"`
-	Path             string          `json:"path,omitempty"`
-	Filename         string          `json:"filename,omitempty"`
-	MIME             string          `json:"mime,omitempty"`
-	Data             string          `json:"data,omitempty"`
-	ClientID         string          `json:"client_id,omitempty"`
-	ReplaceEndpoints []string        `json:"replace_endpoints,omitempty"`
-	NotifyFinished   bool            `json:"notify_finished,omitempty"`
-	Endpoints        []string        `json:"endpoints,omitempty"`
-	Origin           string          `json:"origin,omitempty"`
-	ExpectedOrigin   string          `json:"expected_origin,omitempty"`
-	ExpectedVersion  string          `json:"expected_version,omitempty"`
-	ExpectedRevision string          `json:"expected_revision,omitempty"`
-	Subscription     json.RawMessage `json:"subscription,omitempty"`
+	Type              string          `json:"type"`
+	Protocol          int             `json:"protocol"`
+	RequestID         string          `json:"request_id,omitempty"`
+	PaneID            string          `json:"pane_id,omitempty"`
+	Text              string          `json:"text,omitempty"`
+	Name              string          `json:"name,omitempty"`
+	ProfileID         string          `json:"profile_id,omitempty"`
+	Label             string          `json:"label,omitempty"`
+	WorkspaceID       string          `json:"workspace_id,omitempty"`
+	WorkspaceIDs      []string        `json:"workspace_ids,omitempty"`
+	BeforeWorkspaceID string          `json:"before_workspace_id,omitempty"`
+	Branch            string          `json:"branch,omitempty"`
+	Base              string          `json:"base,omitempty"`
+	Force             bool            `json:"force,omitempty"`
+	Cwd               string          `json:"cwd,omitempty"`
+	Prompt            string          `json:"prompt,omitempty"`
+	EventID           string          `json:"event_id,omitempty"`
+	InteractionID     string          `json:"interaction_id,omitempty"`
+	InsertIndex       *int            `json:"insert_index,omitempty"`
+	Index             *int            `json:"index,omitempty"`
+	Total             *int            `json:"total,omitempty"`
+	Keys              []string        `json:"keys,omitempty"`
+	SelectedIndices   []int           `json:"selected_indices,omitempty"`
+	OtherSelected     bool            `json:"other_selected,omitempty"`
+	OtherText         string          `json:"other_text,omitempty"`
+	Direction         string          `json:"direction,omitempty"`
+	Lines             int             `json:"lines,omitempty"`
+	Before            string          `json:"before,omitempty"`
+	Limit             int             `json:"limit,omitempty"`
+	Columns           int             `json:"columns,omitempty"`
+	Rows              int             `json:"rows,omitempty"`
+	Format            string          `json:"format,omitempty"`
+	Path              string          `json:"path,omitempty"`
+	Filename          string          `json:"filename,omitempty"`
+	MIME              string          `json:"mime,omitempty"`
+	Data              string          `json:"data,omitempty"`
+	ClientID          string          `json:"client_id,omitempty"`
+	ReplaceEndpoints  []string        `json:"replace_endpoints,omitempty"`
+	NotifyFinished    bool            `json:"notify_finished,omitempty"`
+	Endpoints         []string        `json:"endpoints,omitempty"`
+	Origin            string          `json:"origin,omitempty"`
+	ExpectedOrigin    string          `json:"expected_origin,omitempty"`
+	ExpectedVersion   string          `json:"expected_version,omitempty"`
+	ExpectedRevision  string          `json:"expected_revision,omitempty"`
+	Subscription      json.RawMessage `json:"subscription,omitempty"`
 }
 
 func DecodeMap(raw map[string]any) (Inbound, error) {
@@ -203,6 +217,8 @@ var Capabilities = []string{
 	"attention_classification",
 	"clear_activities",
 	"directory_browser",
+	"workspace_management",
+	"worktree_management",
 	"self_update",
 	"structured_questions",
 	"slash_commands",

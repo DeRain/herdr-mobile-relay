@@ -3,8 +3,8 @@ import { dailyActivitySummary, formatWorkingDuration } from '$lib/daily-activity
 import { safeMarkdownHtml } from '$lib/markdown';
 import { detectTerminalMenu, terminalTextInputActive } from '$lib/terminal-menu';
 import { linkifyTerminalText, renderTerminalContent } from '$lib/terminal';
-import type { Activity, Agent } from '$lib/types';
-import { workspaceGroups, workspaceStateTone } from '$lib/workspaces';
+import type { Activity, Agent, RelayWorkspace } from '$lib/types';
+import { informativePath, relayWorkspaceTrees, workspaceGroups, workspaceProvenance, workspaceStateTone } from '$lib/workspaces';
 
 function agent(overrides: Partial<Agent>): Agent {
   return {
@@ -13,6 +13,24 @@ function agent(overrides: Partial<Agent>): Agent {
     raw_pane_id: 'pane-1',
     pane_id: 'relay-a::pane-1',
     status: 'idle',
+    ...overrides,
+  };
+}
+
+function workspace(overrides: Partial<RelayWorkspace>): RelayWorkspace {
+  return {
+    relay_id: 'relay-a',
+    relay_label: 'Laptop',
+    workspace_id: 'work-1',
+    number: 1,
+    label: 'Mobile Relay',
+    focused: false,
+    pane_count: 1,
+    tab_count: 1,
+    active_tab_id: 'tab-1',
+    agent_status: 'idle',
+    cwd: '/home/user/mobile',
+    worktree: null,
     ...overrides,
   };
 }
@@ -42,6 +60,92 @@ describe('workspace navigation', () => {
       workingCount: 1,
       tabs: [{ label: 'Code' }, { label: 'Tests' }],
     });
+  });
+
+  it('keeps authoritative labels and empty shell-only workspaces', () => {
+    const groups = workspaceGroups([
+      agent({ workspace_id: 'work-1', tab_id: 'tab-1', project: 'fallback' }),
+    ], [
+      workspace({}),
+      workspace({
+        workspace_id: 'work-2',
+        number: 2,
+        label: 'Shell Only',
+        cwd: '/home/user/shell',
+        pane_count: 1,
+        tab_count: 1,
+      }),
+    ]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups.find((group) => group.workspaceId === 'work-1')).toMatchObject({
+      label: 'Mobile Relay',
+      cwd: '/home/user/mobile',
+    });
+    expect(groups.find((group) => group.workspaceId === 'work-2')).toMatchObject({
+      label: 'Shell Only',
+      agents: [],
+      tabCount: 1,
+      paneCount: 1,
+    });
+  });
+
+  it('nests linked worktrees under their repository workspace', () => {
+    const repo = {
+      repo_key: 'repo-key',
+      repo_name: 'mobile',
+      repo_root: '/home/user/mobile',
+    };
+    const trees = relayWorkspaceTrees([
+      workspace({
+        worktree: {
+          ...repo,
+          checkout_path: '/home/user/mobile',
+          is_linked_worktree: false,
+        },
+      }),
+      workspace({
+        workspace_id: 'work-2',
+        number: 2,
+        label: 'fix/one',
+        cwd: '/home/user/worktrees/fix-one',
+        worktree: {
+          ...repo,
+          checkout_path: '/home/user/worktrees/fix-one',
+          is_linked_worktree: true,
+        },
+      }),
+      workspace({ workspace_id: 'work-3', number: 3, label: 'Other' }),
+    ]);
+
+    expect(trees).toHaveLength(2);
+    expect(trees[0]).toMatchObject({
+      workspace: { workspace_id: 'work-1' },
+      children: [{ workspace_id: 'work-2', label: 'fix/one' }],
+      workspaceIds: ['work-1', 'work-2'],
+    });
+    expect(trees[1].workspace.workspace_id).toBe('work-3');
+  });
+
+  it('shows workspace provenance and worktree paths only when informative', () => {
+    const repo = { repo_key: 'repo-key', repo_name: 'ibkr', repo_root: '/home/user/ibkr' };
+    const parent = { label: 'ibkr', worktree: { ...repo, checkout_path: '/home/user/ibkr', is_linked_worktree: false } };
+    const renamed = { ...parent, label: 'Trading' };
+    const linked = { label: 'fix/one', worktree: { ...repo, checkout_path: '/home/user/worktrees/fix-one', is_linked_worktree: true } };
+
+    // "Repository · ibkr" inside a card titled "ibkr" repeats the title.
+    expect(workspaceProvenance(parent)).toBe('');
+    expect(workspaceProvenance(renamed)).toBe('Repository · ibkr');
+    // Nested under the parent card the tree already says it is a worktree;
+    // orphaned at top level the repository name is the only provenance left.
+    expect(workspaceProvenance(linked, true)).toBe('');
+    expect(workspaceProvenance(linked)).toBe('Worktree of ibkr');
+    expect(workspaceProvenance({ label: 'Shell Only', worktree: null })).toBe('');
+
+    // A checkout named after its label carries no extra information.
+    expect(informativePath('/home/user/worktrees/fix-one', 'fix-one')).toBe('');
+    expect(informativePath('/home/user/worktrees/fix-one', 'fix/one')).toBe('/home/user/worktrees/fix-one');
+    expect(informativePath('', 'fix-one')).toBe('');
   });
 
   it('uses relay activity order when workspace timestamps tie', () => {

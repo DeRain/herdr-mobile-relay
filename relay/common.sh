@@ -1529,6 +1529,44 @@ record_phone_app_origin() {
     )
 }
 
+# OSC 8 is a terminal protocol, not a vendor feature. Use it for any interactive
+# terminal unless the user or terminal explicitly asks for plain output; modern
+# terminals understand it and older ones safely ignore it.
+stdout_is_terminal() {
+    [ -t 1 ]
+}
+
+terminal_hyperlinks_enabled() {
+    stdout_is_terminal &&
+        [ -z "${NO_COLOR+x}" ] &&
+        [ "${TERM:-}" != dumb ]
+}
+
+# Setup URLs enter both the QR encoder and an OSC 8 sequence. Raw whitespace is
+# not valid in a URL, and control bytes could terminate the terminal sequence.
+# The compiled origin parser enforces HTTPS, with canonical loopback HTTP only.
+phone_setup_url_is_safe() {
+    local url="$1"
+    local origin
+    local normalized
+
+    case "$url" in
+        *[[:cntrl:]]* | *[[:space:]]*) return 1 ;;
+    esac
+    if [[ ! "$url" =~ ^(https?://[^/?#]+) ]]; then
+        return 1
+    fi
+    origin="${BASH_REMATCH[1]}"
+    if ! normalized="$("$(relay_binary)" normalize-origin \
+        --allow-loopback-http "$origin" 2>/dev/null)"; then
+        return 1
+    fi
+    case "$origin" in
+        https://*) return 0 ;;
+        *) [ "$normalized" = "$origin" ] ;;
+    esac
+}
+
 # Prints an indented terminal QR code for the URL, or nothing when it cannot
 # be drawn because the terminal is too narrow. A wrapped QR is worse than the
 # plain link.
@@ -1542,11 +1580,29 @@ render_setup_qr() {
     "$(relay_binary)" qr --columns "${cols:-80}" "$url" 2>/dev/null || true
 }
 
+# The URL has already been validated before this internal emitter is called.
+emit_phone_setup_url() {
+    local phone_url="$1"
+
+    if terminal_hyperlinks_enabled; then
+        printf '  \033]8;;%s\033\\%s\033]8;;\033\\\n' "$phone_url" "$phone_url"
+    else
+        printf '  %s\n' "$phone_url"
+    fi
+}
+
+print_phone_setup_url() {
+    phone_setup_url_is_safe "$1" || return 1
+    emit_phone_setup_url "$1"
+}
+
 # Shared tail of quick-start and setup-link output: QR code when possible,
-# always the link.
+# always the link. Invalid values fail before either output sink sees them.
 print_phone_setup() {
     local phone_url="$1"
     local qr_code
+
+    phone_setup_url_is_safe "$phone_url" || return 1
     qr_code="$(render_setup_qr "$phone_url")"
     if [ -n "$qr_code" ]; then
         echo "  Scan this QR code with your phone camera:"
@@ -1559,7 +1615,7 @@ print_phone_setup() {
     else
         echo "  Open this private setup link on your phone:"
     fi
-    echo "  $phone_url"
+    emit_phone_setup_url "$phone_url"
 }
 
 require_supported_platform() {

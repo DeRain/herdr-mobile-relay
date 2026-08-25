@@ -14,6 +14,7 @@
   import TerminalView from '$components/TerminalView.svelte';
   import UpdateProgressDialog from '$components/UpdateProgressDialog.svelte';
   import WorkspaceInspector from '$components/WorkspaceInspector.svelte';
+  import WorkspaceManager from '$components/WorkspaceManager.svelte';
   import Button from '$components/ui/Button.svelte';
   import Toast from '$components/ui/Toast.svelte';
   import { activityForNotification } from '$lib/activity';
@@ -59,6 +60,7 @@
   const relays = relayStore.relayConfigs;
   const connections = relayStore.connections;
   const agents = relayStore.agents;
+  const workspaces = relayStore.workspaces;
   const activities = relayStore.activities;
   const frames = relayStore.terminalFrames;
   const responding = relayStore.responding;
@@ -121,6 +123,7 @@
         : 'Settings');
   const headerTitle = $derived.by(() => {
     if ($currentView.view === 'settings') return 'Settings';
+    if ($currentView.view === 'workspaces') return 'Workspaces';
     if ($currentView.view === 'launch') return 'Start Agent';
     if ($currentView.view === 'activity') return 'Activity';
     if ($currentView.view === 'activity_detail') return 'Activity';
@@ -307,7 +310,7 @@
     navigate({ view: 'terminal', paneId: agent.pane_id });
   }
 
-  function toggle(view: 'settings' | 'launch' | 'activity') {
+  function toggle(view: 'settings' | 'launch' | 'activity' | 'workspaces') {
     if ($currentView.view === view) closeCurrentView();
     else navigate({ view });
   }
@@ -489,7 +492,7 @@
           aria-label="Conversation history"
           disabled={!conversationHistoryAvailable || !activeAgent}
           title={conversationHistoryAvailable ? 'Conversation history' : 'Conversation history is unavailable for this agent'}
-          onclick={() => { if (activeAgent) navigate({ view: 'history', paneId: activeAgent.pane_id }); }}
+          onclick={() => { if (activeAgent) replaceView({ view: 'history', paneId: activeAgent.pane_id }); }}
         >
           <svg class="header-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
             <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"></path>
@@ -505,11 +508,31 @@
           onclick={() => { workspaceOpen = true; }}
         >
           <svg class="header-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
-            <path d="M3 6.5h7l2 2h9v10H3z"></path>
+            <path d="M3 5.5h7l2 2h9v11H3z"></path>
           </svg>
         </Button>
         <Button variant="ghost" size="icon" aria-label="Manage agent" disabled={!activeAgent} onclick={() => { manageOpen = true; }}>•••</Button>
-      {:else if $currentView.view !== 'history'}
+      {:else if $currentView.view === 'history'}
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Terminal view"
+          title="Terminal view"
+          disabled={!activeAgent}
+          onclick={() => { if (activeAgent) replaceView({ view: 'terminal', paneId: activeAgent.pane_id }); }}
+        >
+          <svg class="header-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+            <path d="m7 9 3 3-3 3M12 15h5"></path>
+          </svg>
+        </Button>
+      {:else}
+        <Button variant="ghost" size="icon" aria-label="Manage workspaces" title="Manage workspaces" onclick={() => toggle('workspaces')}>
+          <svg class="header-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M3 5.5h7l2 2h9v11H3z"></path>
+            <path d="M8 13h8M12 9v8"></path>
+          </svg>
+        </Button>
         <Button variant="ghost" size="icon" aria-label="Start agent" onclick={() => toggle('launch')}>＋</Button>
         <Button variant="ghost" size="icon" aria-label="Activity history" onclick={() => toggle('activity')}>
           <svg class="header-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
@@ -532,14 +555,25 @@
 
   {#if $currentView.view === 'settings'}
     <SettingsView />
+  {:else if $currentView.view === 'workspaces'}
+    <WorkspaceManager />
   {:else if $currentView.view === 'launch'}
-    <LaunchView />
+    <LaunchView
+      relayId={$currentView.relayId}
+      workspaceId={$currentView.workspaceId}
+      cwd={$currentView.cwd}
+    />
   {:else if $currentView.view === 'activity'}
     <ActivityView />
   {:else if $currentView.view === 'activity_detail'}
     <ActivityDetail key={$currentView.key} />
   {:else if $currentView.view === 'history' && activeAgent}
-    <ConversationHistory agent={activeAgent} />
+    <!-- Keyed so a hash navigation straight to another pane's history remounts
+         the view: the reply draft, transcript, and scroll pin are all per-pane
+         state and must never carry over to a different agent. -->
+    {#key activeAgent.pane_id}
+      <ConversationHistory agent={activeAgent} />
+    {/key}
   {:else if $currentView.view === 'history'}
     <main class="page terminal-loading" aria-label="Conversation history unavailable">
       <p role="alert">This agent is not available.</p>
@@ -567,7 +601,7 @@
       {/if}
     </main>
   {:else}
-    <AgentList bind:workspaceDisclosure agents={$agents} relays={$relays} connections={$connections} responding={$responding} onopen={openAgent} />
+    <AgentList bind:workspaceDisclosure agents={$agents} workspaces={$workspaces} relays={$relays} connections={$connections} responding={$responding} onopen={openAgent} />
   {/if}
 </div>
 

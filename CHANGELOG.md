@@ -3,6 +3,172 @@
 Notable user-facing changes to Herdr Mobile Relay are documented here. The
 project follows [Semantic Versioning](https://semver.org/).
 
+## [0.18.2] - 2026-08-25
+
+### Fixed
+
+- Setup links preserve their complete target across wrapped terminal output and reject malformed values before QR or terminal rendering.
+
+## [0.18.1] - 2026-08-24
+
+### Fixed
+
+- Phone-app deployment no longer fails on macOS with an error that blames the
+  release bundle. The relay starts its deployment worker with `launchctl
+  submit`, which runs it from the filesystem root, and Wrangler resolves its
+  working files relative to whatever directory it is started in — so every
+  deployment died creating `/.wrangler/cache`, then `/.wrangler/tmp`, on the
+  read-only system volume. Wrangler reports those as missing directories, and
+  the shortened diagnostic dropped the line naming them, so the update looked
+  as though the staged release had disappeared even though the relay had
+  already verified that bundle byte for byte. Deployment now runs from a
+  directory the relay owns, which covers every path Wrangler derives from its
+  working directory. This is separate from the asset cache skipped in 0.18.0:
+  that option covers the Pages upload cache only.
+- A failed phone-app deployment no longer leaves its job file behind. Only
+  successful deployments removed theirs, so a relay retrying a deployment it
+  could not complete accumulated one file per attempt — thousands on a relay
+  left retrying. Nothing ever re-reads a job file, so the worker now discards
+  it whichever way the deployment ends.
+
+## [0.18.0] - 2026-08-24
+
+### Fixed
+
+- The relay no longer re-broadcasts a full `agents` snapshot on every
+  reconcile poll while nothing has changed. An idle machine used to push a
+  fresh copy of the whole inventory to every phone at the poll cadence —
+  in a different random order each time, because the snapshot iterated a Go
+  map — so idle phones re-processed an "update" every 15 seconds. Snapshots
+  are now emitted in a stable pane order and a broadcast is skipped when
+  nothing a client renders differs from the previous one; explicit
+  `refresh_agents` requests are still answered immediately.
+- Workspace broadcasts follow the same discipline: the topology snapshot is
+  read under the ordering lock so the reconcile poll can never publish an
+  older workspace list over a newer one from the event stream, and a
+  byte-identical repeat is suppressed.
+- A workspace or worktree command queued behind a running one no longer
+  stalls the relay's whole inbound pipeline. Its ingress admission used to
+  wait for the running Herdr command to finish — up to its 60-second
+  deadline — during which prompts and approvals from every phone sat
+  undispatched. (#14)
+- A `#launch=` deep link now hands the form to its requested computer even
+  when another relay connects first; previously the faster sibling kept the
+  selection and the link's workspace and directory were silently dropped.
+  A relay picked by hand is left alone. (#14)
+- Opening another pane's conversation history via a direct link remounts the
+  view, so the reply draft, transcript, and scroll pin can no longer carry
+  over from the previously shown agent. (#13)
+- The Worktrees dialog ignores a slow listing that resolves after the dialog
+  moved on to another workspace; its Open buttons could otherwise submit one
+  repository's paths under another repository's workspace. (#14)
+- Creating a workspace or worktree whose confirmation was lost in transit no
+  longer invites a blind retry that could apply the mutation twice: the
+  dialog steers to the current list first, matching how prompts already
+  handle an ambiguous outcome. (#13, #14)
+
+## [0.17.11] - 2026-08-24
+
+### Changed
+
+- Tab names on home-screen workspace cards sit directly above their agent
+  cards instead of floating in a tall header reserved for the removed reorder
+  buttons.
+- The header workspace icons are drawn taller, matching the height of the
+  neighboring symbols instead of looking vertically compressed.
+
+## [0.17.10] - 2026-08-24
+
+### Changed
+
+- The home screen defaults to the **Mixed** workspace layout: one card per
+  workspace with a dot for its most notable session. **By State** remains
+  available under Settings → Home Workspaces, and a previously saved choice is
+  kept either way. (#14)
+
+## [0.17.9] - 2026-08-24
+
+### Changed
+
+- Linked worktrees now render as a tree with connector rails under their
+  repository workspace on the home screen and the Workspaces page, matching
+  Herdr's own parent/child presentation. Rows no longer repeat what their
+  context already says: the "Linked worktree" label is gone from nested cards,
+  "Repository · name" appears only when the repository differs from the card
+  title, and a checkout path shows only when it differs from the worktree's
+  label. An orphaned worktree whose repository workspace is closed says
+  "Worktree of name" instead. (#14)
+- The **Worktrees** dialog is offered on repository workspaces only. Git
+  worktrees are flat, so Herdr cannot create a worktree from inside a linked
+  worktree; the button no longer appears on those cards. (#14)
+
+## [0.17.8] - 2026-08-23
+
+### Fixed
+
+- Workspace and worktree commands no longer stall the relay's inbound command
+  lane while Herdr executes them; a slow worktree creation used to block every
+  client's prompts and reads until it finished. (#14)
+- Realtime topology events survive older compatible Herdr versions again: the
+  event subscription no longer requests `workspace.reordered` when the
+  connected Herdr predates `workspace.move_block`, which previously failed the
+  whole subscription and silently degraded updates to polling. (#14)
+- Uncertain outcomes are reported honestly end to end: a workspace or tab move
+  whose request was written but never answered, and a worktree mutation whose
+  result envelope cannot be read, now surface as "may have applied" instead of
+  inviting a retry; the app treats a disconnect or confirmation timeout after a
+  sent prompt the same way, so a restored draft can no longer double-send.
+  (#13, #14)
+- The Conversation History draft persists per agent across view switches and
+  clears with the sent prompt, matching the terminal composer. (#13)
+- Workspace manager robustness: a directory listing that resolves after
+  switching computers can no longer leak the previous computer's path into
+  Create Workspace; rename state resets when the selected computer changes; an
+  optimistic drag order is dropped once the authoritative workspace set
+  changes; a worktree dialog dismissed mid-request stays closed; Remove
+  Worktree is disabled without worktree support and capability errors name the
+  actual missing feature; the Workspaces button no longer stacks duplicate
+  history entries; empty linked worktrees whose repository workspace is closed
+  stay visible; and workspace tab and pane counts follow desktop tab changes
+  immediately instead of waiting for the next poll. (#14)
+
+## [0.17.7] - 2026-08-23
+
+### Changed
+
+- Match native Herdr workspace management more closely: **Create Workspace**
+  and **Worktrees** now open focused dialogs instead of expanding the page;
+  workspace ordering uses the same hold-and-drag interaction as home-page tab
+  ordering, with Alt+arrow keys on the reorder handle; and linked worktrees are
+  nested below their repository workspace instead of appearing as unrelated
+  top-level cards. Reordering a repository moves its linked-worktree block
+  atomically when the connected Herdr exposes `workspace.move_block`; older
+  compatible Herdr versions can still move standalone workspaces and are asked
+  to update before moving a linked group. A new workspace keeps Herdr's initial
+  tab, and **Start Agent** adds the agent as the following tab. (#14)
+
+## [0.17.6] - 2026-08-23
+
+### Added
+
+- Reply from searchable Conversation History with an ordinary multiline prompt
+  or image attachment, and switch back to the same agent's terminal from the
+  history header. The composer locks for approvals, structured questions, and
+  other terminal-only interactions; uncertain dispatches stay cleared so a
+  retry cannot duplicate a prompt that may already have arrived. Attachment
+  status is cleared with the sent draft instead of leaking into the next reply.
+  (#13)
+- Manage Herdr workspaces and Git worktrees from the phone without exposing
+  ordinary shell panes as agent terminals or stealing desktop focus. The home
+  screen now keeps authoritative workspace labels, ordering, worktree
+  provenance, and shell-only or empty workspaces instead of reconstructing
+  workspace cards solely from active agents. The new Workspaces view can create,
+  rename, reorder, and close workspaces; start an agent in a selected workspace;
+  and list, create, open, close, or remove Herdr-managed worktrees. Worktree
+  removal keeps the branch, refuses dirty checkouts by default, and offers force
+  removal only through a second destructive confirmation. Every mutation is
+  protocol-gated and recorded in the private remote-write audit log. (#14)
+
 ## [0.17.5] - 2026-08-22
 
 ### Fixed
@@ -1019,7 +1185,16 @@ project follows [Semantic Versioning](https://semver.org/).
 - Release pane-size leases when their WebSocket owner disappears, preventing a
   laptop terminal from remaining narrowed.
 
-[Unreleased]: https://github.com/0cv/herdr-mobile-relay/compare/v0.17.5...HEAD
+[0.18.2]: https://github.com/0cv/herdr-mobile-relay/compare/v0.18.1...v0.18.2
+
+[0.18.1]: https://github.com/0cv/herdr-mobile-relay/compare/v0.18.0...v0.18.1
+[0.18.0]: https://github.com/0cv/herdr-mobile-relay/compare/v0.17.5...v0.18.0
+[0.17.11]: https://github.com/0cv/herdr-mobile-relay/compare/v0.17.10...v0.17.11
+[0.17.10]: https://github.com/0cv/herdr-mobile-relay/compare/v0.17.9...v0.17.10
+[0.17.9]: https://github.com/0cv/herdr-mobile-relay/compare/v0.17.8...v0.17.9
+[0.17.8]: https://github.com/0cv/herdr-mobile-relay/compare/v0.17.7...v0.17.8
+[0.17.7]: https://github.com/0cv/herdr-mobile-relay/compare/v0.17.6...v0.17.7
+[0.17.6]: https://github.com/0cv/herdr-mobile-relay/compare/v0.17.5...v0.17.6
 [0.17.5]: https://github.com/0cv/herdr-mobile-relay/compare/v0.17.4...v0.17.5
 [0.17.4]: https://github.com/0cv/herdr-mobile-relay/compare/v0.17.3...v0.17.4
 [0.17.3]: https://github.com/0cv/herdr-mobile-relay/compare/v0.17.2...v0.17.3

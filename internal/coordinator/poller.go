@@ -1,11 +1,14 @@
 package coordinator
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,12 +27,20 @@ type Poller struct {
 	interval            time.Duration
 	wakeup              chan struct{}
 	onChange            func(agents []*AgentState)
+	onWorkspaceChange   func(workspaces []herdr.Workspace)
 	onStatus            func(status map[string]any)
 	enrich              func(context.Context, []*AgentState)
 	hostname            string
 	topologyRetries     int
 	consecutiveFailures atomic.Int32
 	eventsActive        atomic.Bool
+	// broadcastMu serializes snapshot broadcasts from the reconcile poll and
+	// the event stream, and guards the dedupe state below. Snapshots are read
+	// inside the lock so a slow commit path can never publish an older
+	// topology after a newer one already went out.
+	broadcastMu        sync.Mutex
+	lastAgentsJSON     []byte
+	lastWorkspacesJSON []byte
 }
 
 func NewPoller(client *herdr.Client, state *State, interval time.Duration, logger *slog.Logger) *Poller {
@@ -49,6 +60,10 @@ func NewPoller(client *herdr.Client, state *State, interval time.Duration, logge
 
 func (p *Poller) SetOnChange(fn func(agents []*AgentState)) {
 	p.onChange = fn
+}
+
+func (p *Poller) SetOnWorkspaceChange(fn func(workspaces []herdr.Workspace)) {
+	p.onWorkspaceChange = fn
 }
 
 func (p *Poller) SetOnInventoryStatus(fn func(status map[string]any)) {
@@ -110,17 +125,32 @@ func (p *Poller) poll(ctx context.Context) {
 	}
 	p.consecutiveFailures.Store(0)
 
+	workspaces, err := p.client.WorkspaceList(ctx)
+	if err != nil {
+		p.consecutiveFailures.Add(1)
+		p.state.MarkInventoryFailure(err)
+		p.notifyStatusChange(previousStatus)
+		p.logger.Warn("workspace inventory poll failed", "error", err)
+		return
+	}
+
 	tabs, tabErr := p.client.TabList(ctx)
 	if tabErr != nil {
 		tabs = nil
 	}
+	topologyPanes, paneErr := p.client.PaneList(ctx)
+	if paneErr != nil {
+		topologyPanes = inv.Panes
+	}
+	hydrateWorkspaceCwds(workspaces, tabs, topologyPanes)
 	agents := p.agentsFromTopology(inv.Panes, tabs)
 
 	if p.enrich != nil {
 		p.enrich(ctx, agents)
 	}
 
-	if !p.state.CommitPoll(agents, token) {
+	workspaceChanged, committed := p.state.CommitPoll(agents, workspaces, token)
+	if !committed {
 		p.logger.Debug("discarded topology-stale inventory sample")
 		p.handleTopologyStale(previousStatus)
 		return
@@ -129,8 +159,9 @@ func (p *Poller) poll(ctx context.Context) {
 	p.notifyStatusChange(previousStatus)
 	p.logger.Debug("inventory committed", "agents", len(agents), "topology", p.state.TopologyGeneration())
 
-	if p.onChange != nil {
-		p.onChange(p.state.Snapshot())
+	p.notifyAgentsChanged()
+	if workspaceChanged {
+		p.notifyWorkspacesChanged()
 	}
 }
 
@@ -186,6 +217,34 @@ func (p *Poller) agentsFromTopology(panes []herdr.Pane, tabs []herdr.Tab) []*Age
 		})
 	}
 	return agents
+}
+
+func hydrateWorkspaceCwds(workspaces []herdr.Workspace, tabs []herdr.Tab, panes []herdr.Pane) {
+	cwds := make(map[string]string, len(workspaces))
+	for _, tab := range tabs {
+		if tab.WorkspaceID != "" {
+			cwds[tab.WorkspaceID] = shorterPath(cwds[tab.WorkspaceID], tab.Cwd)
+		}
+	}
+	for _, pane := range panes {
+		if pane.WorkspaceID != "" {
+			cwds[pane.WorkspaceID] = shorterPath(cwds[pane.WorkspaceID], pane.Cwd)
+		}
+	}
+	for index := range workspaces {
+		if workspaces[index].Worktree != nil && workspaces[index].Worktree.CheckoutPath != "" {
+			workspaces[index].Cwd = workspaces[index].Worktree.CheckoutPath
+			continue
+		}
+		workspaces[index].Cwd = cwds[workspaces[index].ID]
+	}
+}
+
+func shorterPath(current, candidate string) string {
+	if candidate == "" || current != "" && len(current) <= len(candidate) {
+		return current
+	}
+	return candidate
 }
 
 func (p *Poller) RunEvents(ctx context.Context, events *herdr.EventClient) {
@@ -266,12 +325,67 @@ func (p *Poller) commitEventTopology(ctx context.Context, topology herdr.Topolog
 		p.enrich(ctx, agents)
 	}
 	p.consecutiveFailures.Store(0)
-	p.state.CommitTopology(agents, baseRevision)
+	workspaceChanged := p.state.CommitTopology(agents, topology.Workspaces, baseRevision)
 	p.notifyStatusChange(previousStatus)
-	p.logger.Debug("event inventory committed", "agents", len(agents), "topology", p.state.TopologyGeneration())
-	if p.onChange != nil {
-		p.onChange(p.state.Snapshot())
+	p.logger.Debug("event inventory committed", "agents", len(agents), "workspaces", len(topology.Workspaces), "topology", p.state.TopologyGeneration())
+	p.notifyAgentsChanged()
+	if workspaceChanged {
+		p.notifyWorkspacesChanged()
 	}
+}
+
+// notifyAgentsChanged broadcasts the current agent snapshot unless nothing a
+// client renders has changed since the last broadcast. Both freshness sources
+// — the reconcile poll and the Herdr event stream — commit through here, so
+// an idle machine stops producing a full `agents` push every interval and
+// phones on metered or fragile links receive silence instead of a
+// re-shuffled copy of what they already display.
+//
+// StateRevision is excluded from the comparison: every commit stamps every
+// agent with the new revision counter, so including it would re-broadcast
+// identical inventories forever. A suppressed revision-only bump is safe —
+// clients only reject revisions that move backwards.
+func (p *Poller) notifyAgentsChanged() {
+	if p.onChange == nil {
+		return
+	}
+	p.broadcastMu.Lock()
+	defer p.broadcastMu.Unlock()
+	snapshot := p.state.Snapshot()
+	comparable := make([]AgentState, len(snapshot))
+	for i, agent := range snapshot {
+		comparable[i] = *agent
+		comparable[i].StateRevision = 0
+	}
+	encoded, err := json.Marshal(comparable)
+	if err == nil {
+		if bytes.Equal(encoded, p.lastAgentsJSON) {
+			return
+		}
+		p.lastAgentsJSON = encoded
+	}
+	p.onChange(snapshot)
+}
+
+// notifyWorkspacesChanged mirrors notifyAgentsChanged for workspace
+// broadcasts: the snapshot is read under broadcastMu so the poll and event
+// commits publish in commit order, and a byte-identical broadcast — both
+// sources committing the same topology back to back — is suppressed.
+func (p *Poller) notifyWorkspacesChanged() {
+	if p.onWorkspaceChange == nil {
+		return
+	}
+	p.broadcastMu.Lock()
+	defer p.broadcastMu.Unlock()
+	workspaces := p.state.Workspaces()
+	encoded, err := json.Marshal(workspaces)
+	if err == nil {
+		if bytes.Equal(encoded, p.lastWorkspacesJSON) {
+			return
+		}
+		p.lastWorkspacesJSON = encoded
+	}
+	p.onWorkspaceChange(workspaces)
 }
 
 func waitForEventReconnect(ctx context.Context) bool {

@@ -99,6 +99,37 @@ async function boot(page: Page, relays: RelayFixture[] = [], path = '/', options
           }));
           return;
         }
+        if (message.type === 'worktree_list') {
+          queueMicrotask(() => this.server({
+            type: 'command_result',
+            action: message.type,
+            request_id: message.request_id,
+            ok: true,
+            phase: 'completed',
+            data: {
+              source: {
+                repo_key: 'repo',
+                repo_name: 'project',
+                repo_root: '/work/project',
+                source_checkout_path: '/work/project',
+                source_workspace_id: 'w1',
+              },
+              worktrees: [
+                {
+                  path: '/work/worktrees/project/fix-one',
+                  branch: 'fix/one',
+                  is_bare: false,
+                  is_detached: false,
+                  is_prunable: false,
+                  is_linked_worktree: true,
+                  label: 'fix/one',
+                  open_workspace_id: null,
+                },
+              ],
+            },
+          }));
+          return;
+        }
         if (String(message.type).startsWith('workspace_')) {
           let data: Record<string, unknown>;
           switch (message.type) {
@@ -318,6 +349,163 @@ async function handshake(page: Page, index: number, overrides: Record<string, un
 
 const fedora = { id: 'fedora', label: 'Fedora', url: 'wss://fedora.example', token: '' };
 
+test('manages workspace modals, grouped worktrees, and drag ordering', async ({ page }) => {
+  await boot(page, [fedora]);
+  await expect.poll(() => socketCount(page)).toBe(1);
+  await handshake(page, 0, {
+    capabilities: ['attention_classification', 'directory_browser', 'workspace_management', 'workspace_reorder_block', 'worktree_management'],
+  });
+  const parent = {
+    workspace_id: 'w1', number: 1, label: 'Project', pane_count: 1, tab_count: 1,
+    cwd: '/work/project',
+    worktree: {
+      repo_key: 'repo', repo_name: 'project', repo_root: '/work/project',
+      checkout_path: '/work/project', is_linked_worktree: false,
+    },
+  };
+  const shellOnly = {
+    workspace_id: 'w2', number: 2, label: 'Shell Only', pane_count: 1, tab_count: 1,
+    cwd: '/work/shell-only',
+  };
+  await server(page, 0, { type: 'workspaces', workspaces: [parent, shellOnly] });
+  await server(page, 0, {
+    type: 'agents',
+    agents: [{
+      pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', tab_number: 1,
+      tab_label: 'Agent', status: 'working', project: 'fallback-project', agent: 'codex',
+    }],
+  });
+
+  await expect(page.getByText('Project', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('Shell Only', { exact: true }).first()).toBeVisible();
+  // Idle-only cards start collapsed in the mixed default; a tap expands them.
+  await expect(page.getByText('No agents are running in this workspace.')).toBeHidden();
+  await page.locator('.workspace-card').filter({ hasText: 'Shell Only' }).locator('summary').click();
+  await expect(page.getByText('No agents are running in this workspace.')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Manage workspaces' }).click();
+  await expect(page.locator('#workspace-manager-title')).toBeVisible();
+  await expect.poll(async () => (await commands(page)).some((command) => command.type === 'list_directories')).toBe(true);
+  const workspaceDirectory = (await commands(page)).find((command) => command.type === 'list_directories')!;
+  await server(page, 0, {
+    type: 'command_result',
+    request_id: workspaceDirectory.request_id,
+    action: 'list_directories',
+    ok: true,
+    phase: 'completed',
+    data: {
+      current: { path: '/work/mobile', label: 'mobile' },
+      parent: '/work',
+      directories: [],
+    },
+  });
+
+  await page.getByRole('button', { name: 'Create Workspace' }).click();
+  const createDialog = page.locator('#workspace-create-dialog');
+  await expect(createDialog.getByRole('heading', { name: 'Create Workspace' })).toBeVisible();
+  await createDialog.getByLabel('Label').fill('Phone Workspace');
+  await createDialog.getByRole('button', { name: 'Confirm' }).click();
+  await expect.poll(async () => (await commands(page)).find((command) => command.type === 'workspace_create')).toMatchObject({
+    cwd: '/work/mobile',
+    label: 'Phone Workspace',
+  });
+  await expect(createDialog).toBeHidden();
+
+  const phoneWorkspace = {
+    workspace_id: 'w3', number: 3, label: 'Phone Workspace', pane_count: 1, tab_count: 1,
+    cwd: '/work/mobile',
+  };
+  await server(page, 0, { type: 'workspaces', workspaces: [parent, shellOnly, phoneWorkspace] });
+  const phoneCard = page.locator('.workspace-management-card').filter({ hasText: 'Phone Workspace' });
+  await expect(phoneCard).toContainText('1 tab');
+  await expect(phoneCard).toContainText('0 agents');
+
+  const projectCard = page.locator('.workspace-management-card').first();
+  await projectCard.getByRole('button', { name: 'Rename' }).click();
+  await projectCard.getByLabel('Workspace label').fill('Renamed Project');
+  await projectCard.getByRole('button', { name: 'Save' }).click();
+  await expect.poll(async () => (await commands(page)).find((command) => command.type === 'workspace_rename')).toMatchObject({
+    workspace_id: 'w1',
+    label: 'Renamed Project',
+  });
+
+  await projectCard.getByRole('button', { name: 'Worktrees' }).click();
+  const worktreeDialog = page.locator('#worktree-manager-dialog');
+  await expect(worktreeDialog.getByRole('heading', { name: 'Project Worktrees' })).toBeVisible();
+  await expect(worktreeDialog.getByText('fix/one', { exact: true })).toBeVisible();
+  await worktreeDialog.locator('.worktree-list').getByRole('button', { name: 'Open' }).click();
+  await expect.poll(async () => (await commands(page)).find((command) => command.type === 'worktree_open')).toMatchObject({
+    workspace_id: 'w1',
+    path: '/work/worktrees/project/fix-one',
+  });
+
+  const linked = {
+    workspace_id: 'w4', number: 4, label: 'fix/one', pane_count: 1, tab_count: 1,
+    cwd: '/work/worktrees/project/fix-one',
+    worktree: {
+      repo_key: 'repo', repo_name: 'project', repo_root: '/work/project',
+      checkout_path: '/work/worktrees/project/fix-one', is_linked_worktree: true,
+    },
+  };
+  await server(page, 0, { type: 'workspaces', workspaces: [parent, linked, shellOnly, phoneWorkspace] });
+  await worktreeDialog.getByLabel('Branch').fill('fix/issue-14');
+  await worktreeDialog.getByLabel('Base ref').fill('main');
+  await worktreeDialog.getByRole('button', { name: 'Confirm' }).click();
+  await expect.poll(async () => (await commands(page)).find((command) => command.type === 'worktree_create')).toMatchObject({
+    workspace_id: 'w1',
+    branch: 'fix/issue-14',
+    base: 'main',
+  });
+  await worktreeDialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(worktreeDialog).toBeHidden();
+
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.locator('.workspace-worktree-card')).toContainText('fix/one');
+  await page.getByRole('button', { name: 'Manage workspaces' }).click();
+  await expect(page.locator('#workspace-manager-title')).toBeVisible();
+
+  const projectSlot = page.locator('.workspace-management-slot').first();
+  await expect(projectSlot.locator('.workspace-management-card')).toHaveCount(2);
+  await expect(projectSlot.locator('.nested-workspace')).toContainText('fix/one');
+  const targetSlot = page.locator('.workspace-management-slot').nth(1);
+  const sourceHeader = projectSlot.locator('.workspace-management-card').first().locator('header');
+  const sourceBox = await sourceHeader.boundingBox();
+  const targetBox = await targetSlot.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
+  await page.mouse.down();
+  await page.waitForTimeout(750);
+  await expect(projectSlot).toHaveClass(/workspace-dragging/);
+  await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + targetBox!.height * .8, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(async () => (await commands(page)).find((command) => command.type === 'workspace_reorder')).toMatchObject({
+    workspace_ids: ['w1', 'w4'],
+    before_workspace_id: 'w3',
+  });
+
+  await phoneCard.getByRole('button', { name: 'Start Agent' }).click();
+  await expect(page.getByText('New tab in workspace Phone Workspace.')).toBeVisible();
+  await page.getByLabel('Name').fill('phone-workspace-codex');
+  await page.getByRole('button', { name: 'Start Agent' }).last().click();
+  await expect.poll(async () => (await commands(page)).find((command) => command.type === 'agent_start')).toMatchObject({
+    workspace_id: 'w3',
+    cwd: '/work/mobile',
+  });
+  await server(page, 0, {
+    type: 'workspaces',
+    workspaces: [parent, linked, shellOnly, { ...phoneWorkspace, pane_count: 2, tab_count: 2 }],
+  });
+  await server(page, 0, {
+    type: 'agents',
+    agents: [{
+      pane_id: 'w3:p2', workspace_id: 'w3', tab_id: 'w3:t2', tab_number: 2,
+      tab_label: 'phone-workspace-codex', status: 'working', project: 'mobile', agent: 'codex',
+      cwd: '/work/mobile',
+    }],
+  });
+});
+
 test('groups working agents and synchronizes tab order in both directions', async ({ page }) => {
   await boot(page, [fedora]);
   await expect.poll(() => socketCount(page)).toBe(1);
@@ -336,7 +524,7 @@ test('groups working agents and synchronizes tab order in both directions', asyn
   ];
   await server(page, 0, { type: 'agents', agents });
 
-  const working = page.locator('.working-section');
+  const working = page.locator('section.workspace-section');
   await expect(working.getByText('mobile', { exact: true }).first()).toBeVisible();
   await expect(working.locator('summary strong')).toHaveCount(1);
   await expect(working.locator('.workspace-tab-header h3')).toHaveText(['First', 'Second']);
@@ -370,10 +558,10 @@ test('groups working agents and synchronizes tab order in both directions', asyn
   await expect(working.locator('.workspace-tab-header h3')).toHaveText(['Second', 'First']);
 
   // The long press must not have opened the agent terminal.
-  await expect(page.locator('.working-section')).toBeVisible();
+  await expect(page.locator('section.workspace-section')).toBeVisible();
 });
 
-test('separates done sessions and offers the mixed workspace layout', async ({ page }) => {
+test('defaults to the mixed workspace layout and separates state sections on demand', async ({ page }) => {
   await boot(page, [fedora]);
   await expect.poll(() => socketCount(page)).toBe(1);
   await handshake(page, 0, { capabilities: ['attention_classification'] });
@@ -392,39 +580,44 @@ test('separates done sessions and offers the mixed workspace layout', async ({ p
     ],
   });
 
-  // Default: sections separated by state, done first after the input queue.
+  // Default: one headingless mixed list, one card per workspace with a state
+  // dot, blocked stays on top.
   await expect(page.locator('section.agent-section').first()).toContainText('Needs input');
-  const done = page.locator('.done-section');
-  await expect(done.getByRole('heading', { name: 'Done' })).toBeVisible();
-  await expect(done.locator('summary strong')).toHaveText(['alpha']);
-  await expect(done.locator('.workspace-done-count')).toHaveText('1 done');
-  const working = page.locator('.working-section');
-  await expect(working.locator('summary strong')).toHaveText(['beta']);
-  await expect(page.getByRole('heading', { name: 'Idle' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Workspaces' })).toBeHidden();
-
-  // Mixed: one headingless list, one card per workspace with a state dot,
-  // blocked stays on top.
-  await page.getByRole('button', { name: /Settings/ }).click();
-  await page.getByRole('button', { name: 'Mixed' }).click();
-  await page.getByRole('button', { name: 'Back' }).click();
   await expect(page.getByRole('region', { name: 'Workspaces' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Workspaces' })).toBeHidden();
   await expect(page.getByRole('heading', { name: 'Done' })).toBeHidden();
   await expect(page.getByRole('heading', { name: 'Working' })).toBeHidden();
   await expect(page.getByRole('heading', { name: 'Idle' })).toBeHidden();
-  await expect(page.locator('section.agent-section').first()).toContainText('Needs input');
   const card = (project: string) => page.locator('.workspace-card').filter({ hasText: project });
   await expect(card('alpha').getByRole('img', { name: 'Has a done session' })).toBeVisible();
   await expect(card('beta').getByRole('img', { name: 'Has a working session' })).toBeVisible();
   await expect(card('delta').getByRole('img', { name: 'All sessions idle' })).toBeVisible();
   await expect(page.locator('.workspace-card summary strong')).toHaveText(['alpha', 'beta', 'delta']);
+  // Active workspaces start expanded; idle-only cards stay collapsed.
+  await expect(card('alpha')).toHaveAttribute('open', '');
+  await expect(card('beta')).toHaveAttribute('open', '');
+  await expect(card('delta')).not.toHaveAttribute('open', '');
 
-  // Back to the default layout.
+  // By State: sections separated by state, done first after the input queue.
   await page.getByRole('button', { name: /Settings/ }).click();
   await page.getByRole('button', { name: 'By State' }).click();
   await page.getByRole('button', { name: 'Back' }).click();
-  await expect(page.getByRole('heading', { name: 'Done' })).toBeVisible();
+  const done = page.locator('.done-section');
+  await expect(done.getByRole('heading', { name: 'Done' })).toBeVisible();
+  await expect(done.locator('summary strong')).toHaveText(['alpha']);
+  await expect(done.locator('.workspace-done-count')).toHaveText('1 done');
+  const stateWorking = page.locator('.working-section');
+  await expect(stateWorking.locator('summary strong')).toHaveText(['beta']);
+  await expect(page.getByRole('heading', { name: 'Idle' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Workspaces' })).toBeHidden();
+  await expect(page.locator('section.agent-section').first()).toContainText('Needs input');
+
+  // Back to the mixed default.
+  await page.getByRole('button', { name: /Settings/ }).click();
+  await page.getByRole('button', { name: 'Mixed' }).click();
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByRole('heading', { name: 'Done' })).toBeHidden();
+  await expect(page.getByRole('region', { name: 'Workspaces' })).toBeVisible();
 });
 
 test('keeps activity cards inside the page and confirms permanent deletion', async ({ page }) => {
@@ -3080,7 +3273,7 @@ test('preserves unsafe prompt state for older relays without error data', async 
   await expect(prompt).toHaveValue('');
 });
 
-test('opens native conversation history and pages older turns', async ({ page }) => {
+test('reads and replies from native conversation history', async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -3134,6 +3327,81 @@ test('opens native conversation history and pages older turns', async ({ page })
   await page.getByRole('button', { name: 'Conversation', exact: true }).click();
   await expect(page.getByText('intermediate progress update')).toBeHidden();
 
+  const composer = page.getByRole('textbox', { name: 'Prompt' });
+  await composer.fill('Review the attached screen');
+  const imageInput = page.locator('.conversation-composer input[type=file]');
+  await imageInput.setInputFiles({
+    name: 'history-shot.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from('png'),
+  });
+  const attachedPrompt = [
+    'Review the attached screen',
+    'Image: /home/test/.cache/herdr-mobile-relay/uploads/shot.png',
+    '',
+  ].join('\n');
+  await expect(composer).toHaveValue(attachedPrompt);
+  await expect(page.getByText('Image attached: shot.png')).toBeVisible();
+  const historyReadsBeforeSend = (await commands(page))
+    .filter((command) => command.type === 'get_conversation_history').length;
+  await page.getByRole('button', { name: 'Send prompt' }).click();
+  await expect.poll(async () => (await commands(page)).find((command) => (
+    command.type === 'submit_prompt' && command.text === attachedPrompt.replace(/\n$/, '')
+  ))).toMatchObject({ pane_id: 'w1:p1' });
+  await expect(composer).toHaveValue('');
+  await expect(page.getByText('Image attached: shot.png')).toBeHidden();
+  await expect.poll(async () => (await commands(page))
+    .filter((command) => command.type === 'get_conversation_history').length).toBeGreaterThan(historyReadsBeforeSend);
+
+  await imageInput.setInputFiles({
+    name: 'history-shot.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from('png'),
+  });
+  await expect(page.getByText('Image attached: shot.png')).toBeVisible();
+  await page.getByRole('button', { name: 'Clear prompt text' }).click();
+  await expect(composer).toHaveValue('');
+  await expect(page.getByText('Image attached: shot.png')).toBeHidden();
+
+  await setAutoCommands(page, false);
+  await composer.fill('restore this known failure');
+  await page.getByRole('button', { name: 'Send prompt' }).click();
+  await expect.poll(async () => (await commands(page)).some((command) => (
+    command.type === 'submit_prompt' && command.text === 'restore this known failure'
+  ))).toBe(true);
+  const failedCommand = (await commands(page)).find((command) => (
+    command.type === 'submit_prompt' && command.text === 'restore this known failure'
+  ))!;
+  await server(page, 0, {
+    type: 'command_result',
+    action: 'submit_prompt',
+    request_id: failedCommand.request_id,
+    ok: false,
+    phase: 'failed',
+    error: 'Relay rejected prompt',
+  });
+  await expect(composer).toHaveValue('restore this known failure');
+
+  await composer.fill('do not send this twice');
+  await page.getByRole('button', { name: 'Send prompt' }).click();
+  await expect.poll(async () => (await commands(page)).some((command) => (
+    command.type === 'submit_prompt' && command.text === 'do not send this twice'
+  ))).toBe(true);
+  const ambiguousCommand = (await commands(page)).find((command) => (
+    command.type === 'submit_prompt' && command.text === 'do not send this twice'
+  ))!;
+  await server(page, 0, {
+    type: 'command_result',
+    action: 'submit_prompt',
+    request_id: ambiguousCommand.request_id,
+    ok: false,
+    phase: 'dispatched_unknown',
+    error: 'Command may have executed',
+  });
+  await expect(composer).toHaveValue('');
+  await expect(page.getByText('Command may have executed Check the terminal before sending again.')).toBeVisible();
+  await setAutoCommands(page, true);
+
   await page.getByRole('button', { name: 'Load older turns' }).click();
   await expect(page.getByText('first retained question')).toBeVisible();
   await expect.poll(async () => (await commands(page)).find((command) => (
@@ -3144,8 +3412,23 @@ test('opens native conversation history and pages older turns', async ({ page })
   await search.fill('first retained');
   await expect(page.getByText('first retained question')).toBeVisible();
   await expect(page.getByText('latest retained question')).toBeHidden();
-  await page.getByRole('button', { name: 'Back' }).click();
+  await server(page, 0, {
+    type: 'agent_update',
+    pane_id: 'w1:p1',
+    status: 'blocked',
+    attention_kind: 'approval',
+    options: ['Approve once', 'Reject'],
+    updated_at: 2,
+  });
+  await expect(composer).toBeDisabled();
+  await expect(page.getByText('Switch to Terminal to handle the pending agent interaction.')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Terminal view' }).click();
   await expect(page.getByRole('combobox', { name: 'Prompt' })).toBeVisible();
+  await page.getByRole('button', { name: 'Conversation history' }).click();
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByRole('button', { name: 'Open History app on Fedora' })).toBeVisible();
 });
 
 test('keeps tool-only agent turns and decodes their arguments', async ({ page }) => {
@@ -4401,7 +4684,7 @@ test('refreshes agents on return home and preserves shared terminal behavior', a
   await expect.poll(async () => (await commands(page)).filter((command) => command.type === 'refresh_agents').length)
     .toBe(refreshesBeforeBack + 1);
   await server(page, 0, { type: 'agents', agents: [{ pane_id: 'w1:p1', status: 'working', project: 'Terminal app', agent: 'opencode' }] });
-  await expect(page.getByRole('heading', { name: 'Working' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Open Terminal app on Fedora' })).toBeVisible();
   await page.getByRole('button', { name: 'Open Terminal app on Fedora' }).click();
   await server(page, 0, { type: 'pane_content', pane_id: 'w1:p1', format: 'ansi', content: '     + Thought: 1.0s\n\u001b[38;5;6m     Safe <img src=x onerror=alert(1)>\u001b[0m\n     Docs https://example.com/report?q=1\n     Details\n     ▣ Build · model · 1s' });
   const terminal = page.getByRole('log');

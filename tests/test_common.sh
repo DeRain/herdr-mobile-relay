@@ -130,6 +130,85 @@ test "$(HOME="$NODE_HOME" NVM_DIR="$NODE_HOME/.nvm" PATH=/usr/bin:/bin node_bin_
 test "$(NO_COLOR= menu_item 3 "Stable Tunnel")" = "  3. Stable Tunnel"
 test "$(NO_COLOR=1 menu_item q "Exit, change nothing")" = "  q. Exit, change nothing"
 
+# Use the same origin contract as the packaged binary without depending on an
+# installed release.
+PHONE_SETUP_NORMALIZER="$WORK_DIR/phone-setup-normalizer"
+cat > "$PHONE_SETUP_NORMALIZER" <<'EOF'
+#!/bin/sh
+test "$1 $2" = "normalize-origin --allow-loopback-http" || exit 2
+case "$3" in
+    'https://app.example.test ') printf '%s\n' 'https://app.example.test' ;;
+    https://app.example.test | http://127.0.0.1:8375) printf '%s\n' "$3" ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod 700 "$PHONE_SETUP_NORMALIZER"
+
+PHONE_SETUP_URL='https://app.example.test/#setup=relay%3A%2F%2Fmachine.example.test%3A443%3Ftoken%3Dfixture-private-token-0123456789abcdef'
+run_phone_setup_helper() (
+    relay_binary() { printf '%s\n' "$PHONE_SETUP_NORMALIZER"; }
+    render_setup_qr() {
+        [ "${PHONE_SETUP_RENDER_BAD_QR:-}" != 1 ] ||
+            printf 'attacker-controlled QR\n'
+    }
+    stdout_is_terminal() { [ "${PHONE_SETUP_TTY:-}" = 1 ]; }
+    unset NO_COLOR
+    [ "${PHONE_SETUP_NO_COLOR:-}" != 1 ] || NO_COLOR=1
+    "$@"
+)
+
+PHONE_SETUP_PLAIN_EXPECTED="$(
+    printf '  Open this private setup link on your phone:\n  %s\n' "$PHONE_SETUP_URL"
+)"
+PHONE_SETUP_LINK_EXPECTED="$(
+    printf '  Open this private setup link on your phone:\n'
+    printf '  \033]8;;%s\033\\%s\033]8;;\033\\\n' "$PHONE_SETUP_URL" "$PHONE_SETUP_URL"
+)"
+
+# Redirects stay plain. Interactive terminals receive the vendor-neutral OSC 8
+# protocol; explicit plain-output requests still win.
+test "$(run_phone_setup_helper print_phone_setup "$PHONE_SETUP_URL")" = \
+    "$PHONE_SETUP_PLAIN_EXPECTED"
+test "$(
+    PHONE_SETUP_TTY=1 TERM=xterm-256color \
+        run_phone_setup_helper print_phone_setup "$PHONE_SETUP_URL"
+)" = "$PHONE_SETUP_LINK_EXPECTED"
+test "$(
+    PHONE_SETUP_TTY=1 PHONE_SETUP_NO_COLOR=1 TERM=xterm-256color \
+        run_phone_setup_helper print_phone_setup "$PHONE_SETUP_URL"
+)" = "$PHONE_SETUP_PLAIN_EXPECTED"
+test "$(
+    PHONE_SETUP_TTY=1 TERM=dumb \
+        run_phone_setup_helper print_phone_setup "$PHONE_SETUP_URL"
+)" = "$PHONE_SETUP_PLAIN_EXPECTED"
+
+run_phone_setup_helper phone_setup_url_is_safe \
+    'http://127.0.0.1:8375/#setup=fixture'
+for REJECTED_PHONE_SETUP_URL in \
+    "${PHONE_SETUP_URL}"$'\a''bell' \
+    "${PHONE_SETUP_URL}"$'\033\\''escape' \
+    "${PHONE_SETUP_URL}"$'\n''line' \
+    'https://app.example.test /#setup=fixture' \
+    'javascript:alert(1)' \
+    'http://example.test/#setup=fixture'; do
+    if run_phone_setup_helper phone_setup_url_is_safe \
+        "$REJECTED_PHONE_SETUP_URL"; then
+        echo "setup URL validator accepted an unsafe value" >&2
+        exit 1
+    fi
+done
+unset REJECTED_PHONE_SETUP_URL
+
+# Rejection happens before either the QR or terminal sink writes.
+PHONE_SETUP_ACTUAL="$WORK_DIR/phone-setup-rejected"
+PHONE_SETUP_UNSAFE="${PHONE_SETUP_URL}"$'\033\\''escape'
+if PHONE_SETUP_TTY=1 PHONE_SETUP_RENDER_BAD_QR=1 run_phone_setup_helper \
+    print_phone_setup "$PHONE_SETUP_UNSAFE" > "$PHONE_SETUP_ACTUAL"; then
+    echo "phone setup accepted an unsafe value" >&2
+    exit 1
+fi
+test ! -s "$PHONE_SETUP_ACTUAL"
+
 # Once a shared app is configured, numeric choice 1 must keep it. The previous
 # implicit Enter-only default made the surrounding menu's usual "1" habit
 # silently switch the QR back to this relay.

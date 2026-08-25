@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import Button from '$components/ui/Button.svelte';
   import Card from '$components/ui/Card.svelte';
   import { clientPaneId } from '$lib/agents';
@@ -6,8 +7,18 @@
   import { replaceView } from '$lib/router';
   import { relayStore } from '$lib/store';
 
+  let {
+    relayId: requestedRelayId = '',
+    workspaceId = '',
+    cwd: requestedCwd = '',
+  }: {
+    relayId?: string;
+    workspaceId?: string;
+    cwd?: string;
+  } = $props();
   const relays = relayStore.relayConfigs;
   const connections = relayStore.connections;
+  const workspaces = relayStore.workspaces;
 
   let relayId = $state('');
   let profileId = $state('');
@@ -19,6 +30,11 @@
   let error = $state(false);
   let submitting = $state(false);
   let loadedRelay = '';
+  // A deep link's target relay may connect after a faster sibling. Until the
+  // reader picks a relay by hand, the requested one may still claim the form
+  // when it becomes ready; without this the first-connected relay wins the
+  // race and the link's workspace and directory are silently dropped.
+  let requestedRelayPending = untrack(() => Boolean(requestedRelayId));
   let directoryLoadGeneration = 0;
   let directoryRelayId = '';
   let directoryBrowser: HTMLDivElement;
@@ -33,15 +49,33 @@
   }));
   const connection = $derived($connections.get(relayId));
   const profiles = $derived(connection?.agentProfiles || []);
+  const targetWorkspace = $derived(
+    $workspaces.find((workspace) => (
+      workspace.relay_id === relayId && workspace.workspace_id === workspaceId
+    )) || null,
+  );
 
   $effect(() => {
-    if (!connectedRelays.some((relay) => relay.id === relayId)) relayId = connectedRelays[0]?.id || '';
+    if (requestedRelayPending && connectedRelays.some((relay) => relay.id === requestedRelayId)) {
+      requestedRelayPending = false;
+      relayId = requestedRelayId;
+    }
+    if (!connectedRelays.some((relay) => relay.id === relayId)) {
+      relayId = connectedRelays.some((relay) => relay.id === requestedRelayId)
+        ? requestedRelayId
+        : connectedRelays[0]?.id || '';
+    }
     if (!profiles.some((profile) => profile.id === profileId)) profileId = profiles[0]?.id || '';
     if (relayId && relayId !== loadedRelay) {
       loadedRelay = relayId;
-      cwd = '';
       directoryRelayId = '';
-      void loadDirectory('');
+      const initialPath = relayId === requestedRelayId ? requestedCwd : '';
+      cwd = initialPath;
+      if (initialPath) {
+        directoryRelayId = relayId;
+        name = suggestedLaunchName(initialPath, profileId);
+      }
+      void loadDirectory(initialPath);
     }
   });
 
@@ -79,7 +113,12 @@
       const launchName = name.trim();
       const launchCwd = cwd.trim();
       const result = await relayStore.sendCommand(relayId, {
-        type: 'agent_start', profile_id: profileId, name: launchName, cwd: launchCwd, prompt,
+        type: 'agent_start',
+        profile_id: profileId,
+        name: launchName,
+        cwd: launchCwd,
+        prompt,
+        workspace_id: targetWorkspace?.workspace_id || '',
       }, 45_000);
       const warning = String(result.data?.warning || '');
       status = warning || 'Agent started.';
@@ -112,12 +151,15 @@
   <Card>
     <form class="form-stack" onfocusin={closeDirectoryForOtherField} onsubmit={submit}>
       <label for="launch-relay">Computer</label>
-      <select id="launch-relay" bind:value={relayId} required>
+      <select id="launch-relay" bind:value={relayId} onchange={() => { requestedRelayPending = false; }} required>
         {#if !connectedRelays.length}<option value="">No ready relays</option>{/if}
         {#each connectedRelays as relay (relay.id)}<option value={relay.id}>{relay.label}</option>{/each}
       </select>
       {#if unavailableRelays.length}
         <p class="warning" role="status">Agent inventory is unavailable on {unavailableRelays.map((relay) => relay.label).join(', ')}.</p>
+      {/if}
+      {#if targetWorkspace}
+        <p class="hint">New tab in workspace <strong>{targetWorkspace.label}</strong>. The desktop keeps its current focus.</p>
       {/if}
 
       <label for="launch-profile">Agent</label>

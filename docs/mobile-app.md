@@ -42,12 +42,12 @@ setup and want to know what every screen and control is for.
 ## Workspace navigation and inspection
 
 The home screen keeps agents that need input visible at the top. By default,
-workspaces below them are separated into Done, Working, and Idle sections that
-retain the workspace and tab hierarchy. The **Home Workspaces** setting can mix
-them instead: each workspace appears once with a dot for its most notable
-session — done, then working, then idle. On a phone, tap the magnifying-glass
-button to search projects, workspaces, paths, tabs, sessions, agents, hosts,
-and relays.
+each workspace below them appears once — mixed — with a dot for its most
+notable session: done, then working, then idle. The **Home Workspaces**
+setting can separate them into Done, Working, and Idle sections instead; both
+layouts retain the workspace and tab hierarchy. On a phone, tap the
+magnifying-glass button to search projects, workspaces, paths, tabs, sessions,
+agents, hosts, and relays.
 At 900 CSS pixels and wider, an agent rail keeps those workspace groups beside
 the open terminal.
 
@@ -58,6 +58,40 @@ change is applied to the desktop immediately.
 
 Opened workspace cards remain expanded after visiting an agent and returning to
 the home screen.
+
+The workspace cards come from Herdr's complete workspace inventory rather than
+being inferred from active agents. A workspace therefore remains visible when
+it contains only a shell or no running agent; the phone does not expose that
+shell as a generic terminal.
+
+Open **Workspaces** from the folder button in the header to:
+
+- open **Create Workspace**, choose a directory and label in its dialog, then
+  confirm a non-focusing workspace with the native initial tab;
+- press and hold a workspace card until it lifts, then drag it into place;
+  Alt+arrow keys on its reorder handle provide the same accessible control;
+- rename or close a workspace, or start an agent as a second tab in a selected
+  workspace;
+- open **Worktrees** in a dialog, create a branch-backed worktree, or open an
+  existing checkout as a non-focusing Herdr workspace; Git worktrees are flat,
+  so the dialog is offered on repository workspaces only, never inside a
+  linked worktree;
+- close a linked-worktree workspace without deleting its checkout, or remove
+  the checkout while retaining its Git branch.
+
+Linked worktrees are nested below their repository workspace on both the home
+screen and the Workspaces page, drawn as a tree with connector rails that
+match Herdr's parent/child presentation. Rows repeat neither the repository
+name nor a checkout path that merely restates the worktree's label; a path
+appears only when it differs. Dragging a repository moves that complete group
+atomically when Herdr exposes `workspace.move_block`; older compatible Herdr
+versions can still move a standalone workspace and ask for an update before
+moving a linked group.
+
+Normal worktree removal refuses a dirty checkout. **Force Remove** is offered
+only after that refusal and requires a second confirmation because it discards
+uncommitted checkout changes. Creating a worktree uses Herdr's configured
+worktree directory; the phone cannot provide an arbitrary checkout path.
 
 **Inspect Workspace** is read-only and is available only when the connected
 relay advertises workspace inspection and the agent reports a working
@@ -109,6 +143,15 @@ end. **Conversation** keeps each user prompt and the latest agent answer from
 that exchange. **Full history** shows every recorded message with collapsible
 tool activity. Both use an escaped Markdown subset, search filters the
 currently displayed view, and each message can copy its original Markdown.
+The composer below the history sends ordinary multiline prompts and accepts
+one or more images from the file picker or clipboard. Images are uploaded to
+the computer and added to the prompt by path; the history does not render them
+inline. Draft persistence, slash-command suggestions, hidden-value entry,
+approvals, structured questions, and terminal menus remain in the terminal
+view. The composer locks when one of those interactions needs attention, and
+the **Terminal** header button switches to the same agent without adding
+repeated view toggles to browser history.
+
 Hidden reasoning, injected system records, and sidechain turns remain excluded.
 Reads are confined to known session directories and the newest 16 MiB of very
 large logs. When that bound omits older turns, they remain in the harness log
