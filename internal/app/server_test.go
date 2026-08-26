@@ -616,12 +616,20 @@ func TestHistorySeedServesTheFrameWhileWalkingAnEmptyHistory(t *testing.T) {
 	if response["content"] != "first screen"+seedFooter {
 		t.Fatalf("frame blanked while walking an empty history: %q", response["content"])
 	}
+	// Falling through to the merge would return this same frame, so the returned
+	// content alone cannot tell the fallback from the bug the guard exists to
+	// prevent: the mid-walk screen must not be committed either.
+	if depth := s.historyM.Depth("pane-1"); depth != 0 {
+		t.Fatalf("mid-walk frame committed to history: depth = %d, want 0", depth)
+	}
 }
 
 // Clipping the substituted history to the requested lines drops older rows just
 // as a merge would, and the phone renders that flag as "Older terminal history
-// is not shown". Serving the discarded frame's flag instead claimed a clipped
-// transcript was complete, so the notice vanished for the length of every walk.
+// is not shown". The flag has to describe the rows actually served: reporting
+// the discarded frame's truncation got it wrong in both directions - the notice
+// vanished while a clipped transcript was served, and appeared while a complete
+// one was.
 func TestHistorySeedReportsTruncationOfSubstitutedHistory(t *testing.T) {
 	s, _ := testSeedServer(t, func(context.Context, string, int) (string, bool, error) {
 		return "", false, nil
@@ -655,6 +663,17 @@ func TestHistorySeedReportsTruncationOfSubstitutedHistory(t *testing.T) {
 	}
 	if !strings.Contains(served, "stored 39") {
 		t.Fatalf("served content lost the newest stored rows: %q", served)
+	}
+
+	// The converse: the discarded frame's own flag must not leak into a response
+	// whose stored history fits the request whole.
+	whole := map[string]any{
+		"type": "pane_content", "pane_id": "pane-1",
+		"content": "scrolled back row" + seedFooter, "format": "ansi", "truncated": true,
+	}
+	s.preparePaneResponse(map[string]any{"pane_id": "pane-1", "lines": 100}, whole)
+	if whole["truncated"] != false {
+		t.Fatalf("complete history reported as clipped: %#v, want false", whole["truncated"])
 	}
 }
 

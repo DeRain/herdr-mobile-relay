@@ -2090,14 +2090,15 @@ func (s *Server) classifyPaneResponse(message, response map[string]any) map[stri
 	// the live pane. The stored rows are the honest answer until the walk ends;
 	// only a pane with nothing stored yet falls back to the frame itself.
 	if s.historySeedInFlight(paneID) {
-		// The substituted rows carry their own truncation: clipping the stored
-		// history to historyLimit drops older rows exactly as a merge would, and
-		// the phone reports that to the operator. Serving the frame's flag with
-		// the history's content would claim a clipped transcript is complete.
+		// truncated describes the content actually returned, and that content is
+		// entirely the stored history: clipping it to historyLimit drops older
+		// rows, which the phone reports to the operator. herdr's flag describes
+		// the frame being discarded, so it must not survive the substitution -
+		// ORing it in would claim a complete transcript is clipped. The merge
+		// path below does OR, correctly, because it returns that frame.
 		if stored, storedTruncated := s.historyM.Content(paneID, historyLimit); stored != "" {
-			herdrTruncated, _ := response["truncated"].(bool)
 			response["content"] = stored
-			response["truncated"] = herdrTruncated || storedTruncated
+			response["truncated"] = storedTruncated
 		}
 		return response
 	}
