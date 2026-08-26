@@ -353,7 +353,7 @@ func TestPreparePaneResponsePreservesHistoryWhileResizeSettles(t *testing.T) {
 	if response["truncated"] != false {
 		t.Fatalf("settling truncation = %#v, want false", response["truncated"])
 	}
-	if content := s.historyM.Content("pane-1", 100); content != baseline {
+	if content, _ := s.historyM.Content("pane-1", 100); content != baseline {
 		t.Fatalf("history changed while the resize settled:\n%s", content)
 	}
 }
@@ -444,7 +444,7 @@ func TestHistorySeedFillsAlternateScreenPane(t *testing.T) {
 	if *calls != 1 {
 		t.Fatalf("pane walked %d times, want exactly one", *calls)
 	}
-	content := s.historyM.Content("pane-1", 2000)
+	content, _ := s.historyM.Content("pane-1", 2000)
 	for _, want := range []string{"walked 000", "walked 119", "screen 1"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("seeded history %q lost %q", content, want)
@@ -505,7 +505,7 @@ func TestHistorySeedRetriesThroughDeclinesUntilAWalkLands(t *testing.T) {
 	}
 
 	runSeed(s)
-	if !strings.Contains(s.historyM.Content("pane-1", 2000), "walked 000") {
+	if seeded, _ := s.historyM.Content("pane-1", 2000); !strings.Contains(seeded, "walked 000") {
 		t.Fatalf("walk after declines did not land")
 	}
 	runSeed(s)
@@ -571,7 +571,7 @@ func TestHistorySeedSuppressesMergeWhileWalking(t *testing.T) {
 	})
 	s.historyM.Merge("pane-1", "watched 1"+seedFooter)
 	before := s.historyM.Depth("pane-1")
-	stored := s.historyM.Content("pane-1", 100)
+	stored, _ := s.historyM.Content("pane-1", 100)
 
 	s.historyCaptureMu.Lock()
 	s.historySeeds["pane-1"] = &historySeedState{
@@ -615,6 +615,46 @@ func TestHistorySeedServesTheFrameWhileWalkingAnEmptyHistory(t *testing.T) {
 	s.preparePaneResponse(map[string]any{"pane_id": "pane-1", "lines": 100}, response)
 	if response["content"] != "first screen"+seedFooter {
 		t.Fatalf("frame blanked while walking an empty history: %q", response["content"])
+	}
+}
+
+// Clipping the substituted history to the requested lines drops older rows just
+// as a merge would, and the phone renders that flag as "Older terminal history
+// is not shown". Serving the discarded frame's flag instead claimed a clipped
+// transcript was complete, so the notice vanished for the length of every walk.
+func TestHistorySeedReportsTruncationOfSubstitutedHistory(t *testing.T) {
+	s, _ := testSeedServer(t, func(context.Context, string, int) (string, bool, error) {
+		return "", false, nil
+	})
+	rows := make([]string, 0, 40)
+	for index := range 40 {
+		rows = append(rows, fmt.Sprintf("stored %02d", index))
+	}
+	s.historyM.Merge("pane-1", strings.Join(rows, "\n")+seedFooter)
+
+	s.historyCaptureMu.Lock()
+	s.historySeeds["pane-1"] = &historySeedState{
+		generation: s.state.Generation("pane-1"), walking: true,
+	}
+	s.historyInflight["pane-1"] = true
+	s.historyCaptureMu.Unlock()
+
+	response := map[string]any{
+		"type": "pane_content", "pane_id": "pane-1",
+		"content": "scrolled back row" + seedFooter, "format": "ansi", "truncated": false,
+	}
+	s.preparePaneResponse(map[string]any{"pane_id": "pane-1", "lines": 10}, response)
+
+	if response["truncated"] != true {
+		t.Fatalf("mid-walk truncation = %#v, want true: the served history is clipped to 10 rows",
+			response["truncated"])
+	}
+	served, _ := response["content"].(string)
+	if strings.Contains(served, "stored 00") {
+		t.Fatalf("served content was not clipped to the requested lines: %q", served)
+	}
+	if !strings.Contains(served, "stored 39") {
+		t.Fatalf("served content lost the newest stored rows: %q", served)
 	}
 }
 
@@ -742,7 +782,7 @@ func TestHistorySeedWaitsOutLeases(t *testing.T) {
 	if *calls != 1 {
 		t.Fatalf("pane walked %d times after the lease cleared, want 1", *calls)
 	}
-	if !strings.Contains(s.historyM.Content("pane-1", 2000), "walked 000") {
+	if seeded, _ := s.historyM.Content("pane-1", 2000); !strings.Contains(seeded, "walked 000") {
 		t.Fatalf("post-lease walk did not land")
 	}
 }
@@ -761,7 +801,7 @@ func TestHistoryTickWalksIdlePanes(t *testing.T) {
 	if *calls != 1 {
 		t.Fatalf("idle pane walked %d times from the tick, want 1", *calls)
 	}
-	if !strings.Contains(s.historyM.Content("pane-1", 2000), "walked 000") {
+	if seeded, _ := s.historyM.Content("pane-1", 2000); !strings.Contains(seeded, "walked 000") {
 		t.Fatalf("tick walk did not land")
 	}
 }
@@ -1564,7 +1604,11 @@ func TestBackgroundClaudeHistoryCaptureDoesNotRequirePhoneRead(t *testing.T) {
 
 	s.scheduleHistoryCapture(context.Background(), "pane-1")
 	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(s.historyM.Content("pane-1", 100), "second output") {
+	captured := func() string {
+		content, _ := s.historyM.Content("pane-1", 100)
+		return content
+	}
+	for !strings.Contains(captured(), "second output") {
 		if time.Now().After(deadline) {
 			t.Fatal("background capture did not persist Claude pane output")
 		}

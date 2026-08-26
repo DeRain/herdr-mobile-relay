@@ -97,13 +97,15 @@ func (m *Manager) merge(paneID string, rawContent string, limit int) (string, bo
 	return joinContent(state, limit)
 }
 
-func (m *Manager) Content(paneID string, limit int) string {
+// Content returns the pane's stored history clipped to its newest limit lines,
+// and whether clipping dropped anything - the same contract as MergeLimited,
+// because a caller that serves this to a client has to tell it the transcript
+// continues above what it received.
+func (m *Manager) Content(paneID string, limit int) (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	state := m.loadState(paneID)
-	content, _ := joinContent(state, limit)
-	return content
+	return joinContent(m.loadState(paneID), limit)
 }
 
 // Depth reports how many history rows are stored for a pane, excluding the

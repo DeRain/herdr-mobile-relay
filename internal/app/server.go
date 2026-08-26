@@ -68,8 +68,11 @@ const (
 	// because the transcript is short nor a harvest that fails outright can be
 	// told apart from one, and retrying either forever scrolls the operator's
 	// pane - or burns an RPC and logs a warning - every 15s for as long as the
-	// pane lives. Eight attempts spend at most ~16s of visible movement across
-	// the two minutes after a pane goes idle, then the seed is retired.
+	// pane lives. Eight attempts spend at most ~16s of visible movement when the
+	// pane answers fast, or eight historySeedDeadline reads when it does not
+	// answer at all; either way the seed is then retired, and only a new pane
+	// generation restores the budget. A merely slow pane is retired too, which
+	// is the price of bounding one the relay can never walk.
 	historySeedMaxAttempts = 8
 )
 
@@ -1587,9 +1590,10 @@ func (s *Server) scheduleHistorySeed(paneID string, limit int) {
 			// repeatable: an older herdr with no walkable source, a missing CLI
 			// fallback, or a socket that answers but refuses this call all fail
 			// every time. Spending an attempt is what stops the 15s retry from
-			// re-reading such a pane for the life of the relay. A vanished pane
-			// needs no budget - its generation has already moved on, which
-			// spendSeedAttempt ignores.
+			// re-reading such a pane for the life of the relay. A goroutine whose
+			// generation has already been replaced charges nothing:
+			// spendSeedAttempt matches on the seed record it started against, and
+			// the successor's record starts with a fresh budget.
 			s.logger.Warn("pane history seed failed", "pane_id", paneID, "error", err)
 			s.spendSeedAttempt(paneID, generation)
 			return
@@ -2086,8 +2090,14 @@ func (s *Server) classifyPaneResponse(message, response map[string]any) map[stri
 	// the live pane. The stored rows are the honest answer until the walk ends;
 	// only a pane with nothing stored yet falls back to the frame itself.
 	if s.historySeedInFlight(paneID) {
-		if stored := s.historyM.Content(paneID, historyLimit); stored != "" {
+		// The substituted rows carry their own truncation: clipping the stored
+		// history to historyLimit drops older rows exactly as a merge would, and
+		// the phone reports that to the operator. Serving the frame's flag with
+		// the history's content would claim a clipped transcript is complete.
+		if stored, storedTruncated := s.historyM.Content(paneID, historyLimit); stored != "" {
+			herdrTruncated, _ := response["truncated"].(bool)
 			response["content"] = stored
+			response["truncated"] = herdrTruncated || storedTruncated
 		}
 		return response
 	}
